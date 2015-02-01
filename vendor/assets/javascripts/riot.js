@@ -1,12 +1,15 @@
-/* Riot 2.0.2, @license MIT, (c) 2015 Muut Inc. + contributors */
+/* Riot 2.0.7, @license MIT, (c) 2015 Muut Inc. + contributors */
 
 ;(function() {
 
-var riot = { version: 'v2.0.2' }
+var riot = { version: 'v2.0.7' }
 
 'use strict'
 
 riot.observable = function(el) {
+
+  el = el || {}
+
   var callbacks = {}
 
   el.on = function(events, fn) {
@@ -49,6 +52,7 @@ riot.observable = function(el) {
         fn.busy = 1
         fn.apply(el, fn.typed ? [name].concat(args) : args)
         if (fn.one) { fns.splice(i, 1); i-- }
+         else if (fns[i] !== fn) { i-- } // Makes self-removal possible during iteration
         fn.busy = 0
       }
     }
@@ -65,7 +69,7 @@ riot.observable = function(el) {
   if (!this.top) return
 
   var loc = location,
-      fns = riot.observable({}),
+      fns = riot.observable(),
       current = hash(),
       win = window
 
@@ -73,11 +77,15 @@ riot.observable = function(el) {
     return loc.hash.slice(1)
   }
 
+  function parser(path) {
+    return path.split('/')
+  }
+
   function emit(path) {
     if (path.type) path = hash()
 
     if (path != current) {
-      fns.trigger.apply(null, ['H'].concat(path.split('/')))
+      fns.trigger.apply(null, ['H'].concat(parser(path)))
       current = path
     }
   }
@@ -95,7 +103,11 @@ riot.observable = function(el) {
   }
 
   r.exec = function(fn) {
-    fn.apply(null, hash().split('/'))
+    fn.apply(null, parser(hash()))
+  }
+
+  r.parser = function(fn) {
+    parser = fn
   }
 
   win.addEventListener ? win.addEventListener(evt, emit, false) : win.attachEvent('on' + evt, emit)
@@ -260,11 +272,14 @@ riot._tmpl = (function() {
   }
 
 })()
-;(function(riot, doc) {
+;(function(riot, is_browser) {
+
+  if (!is_browser) return
 
   var tmpl = riot._tmpl,
       all_tags = [],
-      tag_impl = {}
+      tag_impl = {},
+      doc = document
 
   function each(nodes, fn) {
     for (var i = 0; i < (nodes || []).length; i++) {
@@ -296,9 +311,37 @@ riot._tmpl = (function() {
 
 
   function mkdom(tmpl) {
-    var el = doc.createElement('div')
+    var tag_name = tmpl.trim().slice(1, 3).toLowerCase(),
+        root_tag = /td|th/.test(tag_name) ? 'tr' : tag_name == 'tr' ? 'tbody' : 'div'
+        el = doc.createElement(root_tag)
+
     el.innerHTML = tmpl
     return el
+  }
+
+
+  function setEventHandler(name, handler, dom, instance) {
+
+    dom[name] = function(e) {
+
+      // cross browser event fix
+      e = e || window.event
+      e.which = e.which || e.charCode || e.keyCode
+      e.target = e.target || e.srcElement
+      e.currentTarget = dom
+
+      // currently looped item
+      e.item = instance.__item || instance
+
+      // prevent default behaviour (by default)
+      if (handler.call(instance, e) !== true) {
+        e.preventDefault && e.preventDefault()
+        e.returnValue = false
+      }
+
+      instance.update()
+    }
+
   }
 
 
@@ -344,25 +387,7 @@ riot._tmpl = (function() {
 
       // event handler
       if (typeof value == 'function') {
-        dom[attr_name] = function(e) {
-
-          // cross browser event fix
-          e = e || window.event
-          e.which = e.which || e.charCode || e.keyCode
-          e.target = e.target || e.srcElement
-          e.currentTarget = dom
-
-          // currently looped item
-          e.item = instance.__item || instance
-
-          // prevent default behaviour (by default)
-          if (value.call(instance, e) !== true) {
-            e.preventDefault && e.preventDefault()
-            e.returnValue = false
-          }
-
-          instance.update()
-        }
+        setEventHandler(attr_name, value, dom, instance)
 
       // show / hide / if
       } else if (/^(show|hide|if)$/.test(attr_name)) {
@@ -373,6 +398,7 @@ riot._tmpl = (function() {
       // normal attribute
       } else {
         if (expr.bool) {
+          dom[attr_name] = value
           if (!value) return
           value = attr_name
         }
@@ -391,21 +417,22 @@ riot._tmpl = (function() {
     var named_elements = {},
         expressions = []
 
+
+    function addExpr(dom, value, data) {
+      if (value ? value.indexOf('{') >= 0 : data) {
+        var expr = { dom: dom, expr: value }
+        expressions.push(extend(expr, data || {}))
+      }
+    }
+
     walk(root, function(dom) {
 
       var type = dom.nodeType,
           value = dom.nodeValue
 
-      function addExpr(value, data) {
-        if (value ? value.indexOf('{') >= 0 : data) {
-          var expr = { dom: dom, expr: value }
-          expressions.push(extend(expr, data || {}))
-        }
-      }
-
       // text node
       if (type == 3 && dom.parentNode.tagName != 'STYLE') {
-        addExpr(value)
+        addExpr(dom, value)
 
       // element
       } else if (type == 1) {
@@ -414,7 +441,7 @@ riot._tmpl = (function() {
         value = dom.getAttribute('each')
 
         if (value) {
-          addExpr(value, { loop: 1 })
+          addExpr(dom, value, { loop: 1 })
           return false
         }
 
@@ -432,7 +459,7 @@ riot._tmpl = (function() {
           // expressions
           if (!tag) {
             var bool = name.split('__')[1]
-            addExpr(value, { attr: bool || name, bool: bool })
+            addExpr(dom, value, { attr: bool || name, bool: bool })
             if (bool) {
               dom.removeAttribute(name)
               return false
@@ -441,7 +468,7 @@ riot._tmpl = (function() {
 
         })
 
-        if (tag) addExpr(0, { tag: tag })
+        if (tag) addExpr(dom, 0, { tag: tag })
 
       }
 
@@ -570,7 +597,7 @@ riot._tmpl = (function() {
 
     instance.on('updated', function() {
 
-      var items = tmpl(val, instance)
+      var items = tmpl(val, instance),
           is_array = Array.isArray(items)
 
       if (is_array) items = items.slice(0)
@@ -608,7 +635,7 @@ riot._tmpl = (function() {
         if (keys && !checksum) {
           var obj = {}
           obj[keys[0]] = item
-          obj[keys[1]] = i
+          obj[keys[1]] = pos
           item = obj
         }
 
@@ -670,7 +697,7 @@ riot._tmpl = (function() {
     })
   }
 
-})(riot, document)
+})(riot, this.top)
 
 
 // support CommonJS
@@ -686,4 +713,3 @@ else
   this.riot = riot
 
 })();
-
